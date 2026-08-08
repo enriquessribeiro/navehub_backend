@@ -1,0 +1,143 @@
+// Schema do NaveHub.
+//
+// Este arquivo é a fonte de verdade das TABELAS do banco. As políticas de
+// Row Level Security, o trigger de criação de perfil e a foreign key de
+// `profiles.id` para `auth.users` (schema gerenciado pelo Supabase Auth,
+// fora do alcance do Prisma) vivem em `supabase/sql/0001_policies_and_trigger.sql`
+// e devem ser aplicadas DEPOIS de `prisma migrate deploy`. Ver README.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // conexão direta (sem pooler), usada só na hora de rodar as migrations
+  directUrl = env("DIRECT_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Papel {
+  aluno
+  professor
+  admin
+
+  @@map("papel")
+}
+
+// Os valores abaixo espelham os códigos de disciplina retornados pela API
+// do enem.dev (que usa hífen, ex.: "ciencias-humanas") — a tradução
+// hífen -> underscore acontece no serviço de sincronização.
+enum AreaEnem {
+  matematica
+  linguagens
+  ciencias_humanas
+  ciencias_natureza
+
+  @@map("area_enem")
+}
+
+enum StatusRedacao {
+  pendente
+  corrigida
+
+  @@map("status_redacao")
+}
+
+// ----------------------------------------------------------------------------
+// profiles — espelha auth.users (1 linha por usuário do Supabase Auth),
+// criado automaticamente pelo trigger `handle_new_user` (ver SQL).
+// ----------------------------------------------------------------------------
+model Profile {
+  /// Mesmo UUID de auth.users.id — a FK para auth.users é adicionada via SQL.
+  id           String   @id @db.Uuid
+  nome         String
+  papel        Papel    @default(aluno)
+  metaQuestoes Int      @default(30) @map("meta_questoes")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  redacoesEnviadas   Essay[]           @relation("EssaysByAluno")
+  redacoesCorrigidas Essay[]           @relation("EssaysByProfessor")
+  tentativas         QuestionAttempt[]
+
+  @@map("profiles")
+}
+
+// ----------------------------------------------------------------------------
+// questions — cache local das questões importadas do enem.dev.
+// ----------------------------------------------------------------------------
+model Question {
+  id     String @id @default(uuid()) @db.Uuid
+  /// Chave natural usada para deduplicar na sincronização: "{ano}-{index}".
+  enemId String @unique @map("enem_id")
+
+  ano        Int
+  area       AreaEnem?
+  disciplina String?
+  idioma     String?  @default("portugues")
+
+  titulo                String
+  enunciado              String? // campo "context" da API — markdown, pode ser nulo
+  introducaoAlternativas String? @map("introducao_alternativas")
+  arquivos               Json    @default("[]") // imagens do enunciado
+  alternativas           Json // [{ letra, texto, arquivo, correta }]
+  gabarito               String // letra correta (A-E)
+  dadosOriginais         Json    @map("dados_originais") // payload cru da API, guardado para depuração
+
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  tentativas QuestionAttempt[]
+
+  @@index([ano, area, idioma])
+  @@map("questions")
+}
+
+// ----------------------------------------------------------------------------
+// essays — redações enviadas pelos alunos e corrigidas pelos professores.
+// ----------------------------------------------------------------------------
+model Essay {
+  id          String        @id @default(uuid()) @db.Uuid
+  alunoId     String        @map("aluno_id") @db.Uuid
+  professorId String?       @map("professor_id") @db.Uuid
+
+  tema String
+  texto String
+
+  status   StatusRedacao @default(pendente)
+  nota     Int?
+  feedback String?
+
+  enviadaEm   DateTime  @default(now()) @map("enviada_em")
+  corrigidaEm DateTime? @map("corrigida_em")
+
+  aluno     Profile  @relation("EssaysByAluno", fields: [alunoId], references: [id], onDelete: Cascade)
+  professor Profile? @relation("EssaysByProfessor", fields: [professorId], references: [id])
+
+  @@index([status])
+  @@index([alunoId])
+  @@map("essays")
+}
+
+// ----------------------------------------------------------------------------
+// question_attempts — cada resposta de um aluno a uma questão, usada para
+// calcular "questões feitas", "% de acerto" e desempenho por área.
+// ----------------------------------------------------------------------------
+model QuestionAttempt {
+  id           String   @id @default(uuid()) @db.Uuid
+  alunoId      String   @map("aluno_id") @db.Uuid
+  questionId   String   @map("question_id") @db.Uuid
+  respostaDada String   @map("resposta_dada")
+  correta      Boolean
+  respondidaEm DateTime @default(now()) @map("respondida_em")
+
+  aluno    Profile  @relation(fields: [alunoId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([alunoId, questionId], name: "aluno_questao_unica")
+  @@map("question_attempts")
+}
