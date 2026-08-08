@@ -1,0 +1,29 @@
+# Blueprint de deploy do Render (https://render.com/docs/blueprint-spec).
+#
+# Create > New > Blueprint > repo navehub_backend. Os segredos marcados com
+# `sync: false` são pedidos na primeira configuração do serviço.
+services:
+  - type: web
+    name: navehub-backend
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install && npm run build
+    startCommand: npx prisma migrate deploy && npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: ENEM_API_BASE_URL
+        value: https://api.enem.dev/v1
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: SYNC_SECRET
+        sync: false
