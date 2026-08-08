@@ -9,6 +9,9 @@ import type { EnemApiErrorBody, EnemQuestionsResponseApi } from "../types/enem.t
  */
 const MIN_INTERVAL_MS = 1100;
 const MAX_RETRIES = 3;
+/** Tempo de espera máximo por página da API antes de abortar — sem isso,
+ *  uma resposta travada deixaria a sincronização pendurada indefinidamente. */
+const TIMEOUT_MS = 15_000;
 
 let lastRequestAt = 0;
 
@@ -26,13 +29,27 @@ async function throttle(): Promise<void> {
 
 async function fetchWithRetry(url: string, attempt = 0): Promise<Response> {
   await throttle();
-  const response = await fetch(url);
+
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (erroFetch) {
+    // Timeout/abort da requisição: tenta de novo (poucas vezes), senão propaga.
+    if (attempt < MAX_RETRIES && erroFetch instanceof Error && erroFetch.name === "AbortError") {
+      await sleep(MIN_INTERVAL_MS);
+      return fetchWithRetry(url, attempt + 1);
+    }
+    throw erroFetch;
+  }
 
   if (response.status === 429 && attempt < MAX_RETRIES) {
     const retryAfterHeader = response.headers.get("Retry-After");
-    // O header documentado vem em milissegundos.
-    const waitMs = retryAfterHeader ? Number(retryAfterHeader) : MIN_INTERVAL_MS * 2;
-    await sleep(Number.isFinite(waitMs) && waitMs > 0 ? waitMs : MIN_INTERVAL_MS * 2);
+    // O padrão HTTP define Retry-After em SEGUNDOS (ou HTTP-date). Antes o
+    // valor era tratado como milissegundos, o que produzia retries em cadeia
+    // contra o rate limit. Valores não numéricos caem no fallback abaixo.
+    const segundos = retryAfterHeader ? Number(retryAfterHeader) : 0;
+    const esperaMs = Number.isFinite(segundos) && segundos > 0 ? segundos * 1000 : MIN_INTERVAL_MS * 2;
+    await sleep(Math.max(esperaMs, MIN_INTERVAL_MS));
     return fetchWithRetry(url, attempt + 1);
   }
 
