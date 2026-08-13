@@ -45,7 +45,11 @@ function toQuestionCreateData(question: EnemQuestionApi): Prisma.QuestionCreateI
   }));
 
   return {
-    enemId: `${question.year}-${question.index}`,
+    // Chave natural inclui o idioma: a API usa o MESMO índice (ex.: 2023-1)
+    // para português, espanhol e inglês; sem o sufixo, o upsert de um idioma
+    // sobrescreveria o outro (ver migração 0005). Sem idioma => "portugues",
+    // mesmo critério do SQL de migração e do default do frontend.
+    enemId: `${question.year}-${question.index}-${question.language ?? "portugues"}`,
     ano: question.year,
     area: mapDiscipline(question.discipline) ?? undefined,
     disciplina: question.discipline,
@@ -71,8 +75,8 @@ export interface SyncYearResult {
 /**
  * Sincroniza todas as questões de um ano de prova, paginando conforme o
  * `hasMore` retornado pela API. Cada questão é gravada com um `upsert`
- * (chave natural `enemId = "{ano}-{index}"`), então rodar de novo é seguro
- * e idempotente — não duplica nem perde nada já importado.
+ * (chave natural `enemId = "{ano}-{index}-{idioma}"`), então rodar de novo é
+ * seguro e idempotente — não duplica nem perde nada já importado.
  */
 export async function syncEnemYear(year: number, language?: string): Promise<SyncYearResult> {
   const result: SyncYearResult = {
